@@ -1,0 +1,90 @@
+#!/bin/sh
+################################################################################
+# Custom Lynis Module
+# SSH Security Configuration Audit
+################################################################################
+
+Register \
+  --test-no SSH-9001 \
+  --weight L \
+  --network NO \
+  --category security \
+  --description "SSH Security Configuration Audit"
+
+if [ "${SKIPTEST}" -ne 0 ]; then
+    return 0 2>/dev/null || exit 0
+fi
+
+LogText "Running SSH Security Configuration Audit"
+
+EXPOSURE_SCORE=0
+
+if ! command -v sshd >/dev/null 2>&1; then
+    Display --indent 2 --text "- OpenSSH Server not installed" --result "${STATUS_SKIPPED}" --color YELLOW
+    LogText "OpenSSH server not installed"
+    return 0 2>/dev/null || exit 0
+fi
+
+Display --indent 2 --text "- OpenSSH server installed" --result "${STATUS_OK}" --color GREEN
+
+if ! SSHD_CFG="$(sshd -T 2>/dev/null)"; then
+    Display --indent 2 --text "- Unable to parse effective SSH configuration" --result "${STATUS_WARNING}" --color RED
+    ReportWarning "${TEST_NO}" "Could not obtain sshd effective configuration."
+    SSHD_CFG=""
+else
+    Display --indent 2 --text "- SSH configuration parsed successfully" --result "${STATUS_OK}" --color GREEN
+fi
+
+get_cfg() {
+    printf "%s\n" "$SSHD_CFG" | awk -v k="$1" '$1==k{print $2;exit}'
+}
+
+check_bool() {
+    key="$1"; good="$2"; label="$3"; badmsg="$4"; pts="$5"
+    val="$(get_cfg "$key")"
+    [ -z "$val" ] && val="(default)"
+    if [ "$val" = "$good" ]; then
+        Display --indent 2 --text "- ${label}: ${val}" --result "${STATUS_OK}" --color GREEN
+    else
+        EXPOSURE_SCORE=$((EXPOSURE_SCORE+pts))
+        Display --indent 2 --text "- ${label}: ${val}" --result "${STATUS_WARNING}" --color RED
+        ReportSuggestion "${TEST_NO}" "${badmsg}"
+    fi
+}
+
+check_bool permitrootlogin no "Root login" "Disable root login (PermitRootLogin no)." 2
+check_bool passwordauthentication no "Password authentication" "Disable password authentication." 2
+check_bool pubkeyauthentication yes "Public key authentication" "Enable public key authentication." 1
+check_bool permitemptypasswords no "Empty passwords" "Disable empty passwords." 3
+check_bool x11forwarding no "X11 forwarding" "Disable X11 forwarding unless required." 1
+check_bool permituserenvironment no "User environment" "Disable PermitUserEnvironment." 2
+check_bool allowtcpforwarding no "TCP forwarding" "Disable TCP forwarding unless required." 1
+
+MAX="$(get_cfg maxauthtries)"
+[ -z "$MAX" ] && MAX=6
+
+if [ "$MAX" -le 4 ] 2>/dev/null; then
+    Display --indent 2 --text "- Max authentication attempts: ${MAX}" --result "${STATUS_OK}" --color GREEN
+else
+    EXPOSURE_SCORE=$((EXPOSURE_SCORE+1))
+    Display --indent 2 --text "- Max authentication attempts: ${MAX}" --result "${STATUS_WARNING}" --color RED
+    ReportSuggestion "${TEST_NO}" "Reduce MaxAuthTries to 4 or fewer."
+fi
+
+if sshd -t >/dev/null 2>&1; then
+    Display --indent 2 --text "- SSH configuration syntax valid" --result "${STATUS_OK}" --color GREEN
+else
+    EXPOSURE_SCORE=$((EXPOSURE_SCORE+3))
+    Display --indent 2 --text "- SSH configuration syntax invalid" --result "${STATUS_WARNING}" --color RED
+    ReportWarning "${TEST_NO}" "sshd configuration contains syntax errors."
+fi
+
+if [ "$EXPOSURE_SCORE" -eq 0 ]; then
+    RES="${STATUS_OK}"; COL="GREEN"
+elif [ "$EXPOSURE_SCORE" -le 2 ]; then
+    RES="${STATUS_WARNING}"; COL="YELLOW"
+else
+    RES="${STATUS_WARNING}"; COL="RED"
+fi
+
+Display --indent 2 --text "- SSH Security Exposure Score: ${EXPOSURE_SCORE}" --result "${RES}" --color "${COL}"
