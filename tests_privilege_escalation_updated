@@ -1,0 +1,158 @@
+#!/bin/sh
+################################################################################
+# Custom Lynis Module
+# Privilege Escalation Exposure Audit
+################################################################################
+
+SCORE=0
+
+###############################################################################
+# PEA-9001 - SUID Audit
+###############################################################################
+Register \
+    --test-no PEA-9001 \
+    --weight L \
+    --network NO \
+    --category security \
+    --description "SUID Audit"
+
+if [ ${SKIPTEST} -eq 0 ]; then
+
+LogText "Running Privilege Escalation Exposure Audit"
+
+SUID_LIST=$(find / -perm -4000 -type f 2>/dev/null)
+SUID_COUNT=$(printf "%s\n" "$SUID_LIST" | grep -c .)
+
+Display --indent 2 --text "- SUID binaries found: ${SUID_COUNT}" --result "${STATUS_OK}" --color GREEN
+
+SUSPICIOUS_SUID=$(printf "%s\n" "$SUID_LIST" | grep -E '^(/tmp/|/home/|/opt/|/usr/local/)')
+
+if [ -n "$SUSPICIOUS_SUID" ]; then
+    SCORE=$((SCORE+2))
+    Display --indent 2 --text "- Suspicious SUID binaries detected" --result "${STATUS_WARNING}" --color YELLOW
+    printf "%s\n" "$SUSPICIOUS_SUID" | while read FILE
+    do
+        LogText "Suspicious SUID: $FILE"
+        printf "      %s\n" "$FILE"
+    done
+    ReportWarning "Suspicious SUID binaries detected."
+else
+    Display --indent 2 --text "- Suspicious SUID binaries: None" --result "${STATUS_OK}" --color GREEN
+fi
+
+###############################################################################
+# PEA-9002 - SGID Audit
+###############################################################################
+Register \
+    --test-no PEA-9002 \
+    --weight L \
+    --network NO \
+    --category security \
+    --description "SGID Audit"
+
+SGID_LIST=$(find / -perm -2000 -type f 2>/dev/null)
+SGID_COUNT=$(printf "%s\n" "$SGID_LIST" | grep -c .)
+
+Display --indent 2 --text "- SGID binaries found: ${SGID_COUNT}" --result "${STATUS_OK}" --color GREEN
+
+###############################################################################
+# PEA-9003 - Linux Capabilities
+###############################################################################
+Register \
+    --test-no PEA-9003 \
+    --weight L \
+    --network NO \
+    --category security \
+    --description "Linux Capabilities Audit"
+
+if command -v getcap >/dev/null 2>&1; then
+    CAP_LIST=$(getcap -r / 2>/dev/null)
+    CAP_COUNT=$(printf "%s\n" "$CAP_LIST" | grep -c .)
+    Display --indent 2 --text "- Files with Linux capabilities: ${CAP_COUNT}" --result "${STATUS_OK}" --color GREEN
+    LogText "$CAP_LIST"
+fi
+
+###############################################################################
+# PEA-9004 - Writable PATH Audit
+###############################################################################
+Register \
+    --test-no PEA-9004 \
+    --weight L \
+    --network NO \
+    --category security \
+    --description "Writable PATH Audit"
+
+PATH_WARN=0
+OLDIFS=$IFS
+IFS=:
+
+for DIR in $PATH
+do
+    if [ -d "$DIR" ]; then
+        PERM=$(find "$DIR" -maxdepth 0 -perm -0002 2>/dev/null)
+        if [ -n "$PERM" ]; then
+            PATH_WARN=1
+            SCORE=$((SCORE+1))
+            Display --indent 2 --text "- World-writable PATH directory: $DIR" --result "${STATUS_WARNING}" --color YELLOW
+        fi
+    fi
+done
+
+IFS=$OLDIFS
+
+if [ "$PATH_WARN" -eq 0 ]; then
+    Display --indent 2 --text "- PATH directories are secure" --result "${STATUS_OK}" --color GREEN
+fi
+
+###############################################################################
+# PEA-9005 - World Writable Executables
+###############################################################################
+Register \
+    --test-no PEA-9005 \
+    --weight L \
+    --network NO \
+    --category security \
+    --description "World Writable Executables"
+
+WORLD_EXEC=$(find / -type f -perm -0002 -executable 2>/dev/null)
+if [ -n "$WORLD_EXEC" ]; then
+    SCORE=$((SCORE+2))
+    COUNT=$(printf "%s\n" "$WORLD_EXEC" | grep -c .)
+    Display --indent 2 --text "- World-writable executables: ${COUNT}" --result "${STATUS_WARNING}" --color YELLOW
+    ReportWarning "World-writable executables found."
+else
+    Display --indent 2 --text "- World-writable executables: None" --result "${STATUS_OK}" --color GREEN
+fi
+
+###############################################################################
+# PEA-9006 - sudoers Audit
+###############################################################################
+Register \
+    --test-no PEA-9006 \
+    --weight L \
+    --network NO \
+    --category security \
+    --description "sudoers Audit"
+
+if grep -Eq '^[^#].*NOPASSWD' /etc/sudoers 2>/dev/null; then
+    SCORE=$((SCORE+2))
+    Display --indent 2 --text "- sudoers contains NOPASSWD entries" --result "${STATUS_WARNING}" --color YELLOW
+    ReportSuggestion "Review NOPASSWD entries in /etc/sudoers."
+else
+    Display --indent 2 --text "- sudoers configuration appears normal" --result "${STATUS_OK}" --color GREEN
+fi
+
+###############################################################################
+# PEA-9007 - Exposure Score
+###############################################################################
+Register \
+    --test-no PEA-9007 \
+    --weight L \
+    --network NO \
+    --category security \
+    --description "Exposure Score"
+
+Display --indent 2 --text "- Privilege Escalation Exposure Score: ${SCORE}" --result "${STATUS_OK}" --color GREEN
+LogText "Exposure Score: ${SCORE}"
+
+fi
